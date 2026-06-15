@@ -1,0 +1,443 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Bureaucratorium: DND GM's Tool</title>
+<script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+*{box-sizing:border-box}
+body{font-family:system-ui,sans-serif;margin:0;padding:12px;background:#f4f1ea;color:#222}
+button{padding:6px 10px;margin:2px;cursor:pointer;font-size:13px}
+input,select,textarea{padding:4px;font-size:13px;font-family:inherit}
+input[type=number]{width:60px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.col{display:flex;flex-direction:column;gap:6px}
+.tabs{display:flex;gap:4px;margin-bottom:12px;border-bottom:2px solid #222}
+.tabs button{background:#ddd;border:1px solid #222;border-bottom:none}
+.tabs button.active{background:#f4f1ea;font-weight:bold}
+.panel{border:1px solid #222;padding:10px;background:#fff;margin-bottom:8px}
+.card{border:2px solid #222;padding:8px;background:#fff;min-width:280px;max-width:340px}
+.card.dead{opacity:0.4;background:#ccc}
+.card.active{border-color:#a00;border-width:3px;background:#fff8e0}
+.card h3{margin:0 0 4px;font-size:15px}
+.cards{display:flex;flex-wrap:wrap;gap:8px}
+.battle{display:grid;grid-template-columns:220px 1fr 280px;gap:10px}
+.turn-list li{padding:6px;border:1px solid #888;margin:2px 0;list-style:none;cursor:pointer}
+.turn-list li.active{background:#fff8e0;border-color:#a00;font-weight:bold}
+.turn-list li.dead{opacity:0.4;text-decoration:line-through}
+.turn-list ul{padding:0;margin:0}
+.log{background:#fff;border:1px solid #222;padding:8px;height:500px;overflow-y:auto;font-size:12px;white-space:pre-wrap;font-family:ui-monospace,monospace}
+.tag{display:inline-block;padding:1px 6px;background:#eee;border:1px solid #888;margin:1px;font-size:11px}
+.tag button{padding:0 3px;margin-left:3px;font-size:10px}
+.saves{display:flex;gap:2px}
+.save-box{width:16px;height:16px;border:1px solid #222;display:inline-block;cursor:pointer}
+.save-box.filled{background:#222}
+.save-box.fail{background:#a00}
+details{margin-top:4px}
+summary{cursor:pointer;font-size:12px}
+.mini{font-size:11px;color:#555}
+.atk-row{display:flex;gap:4px;align-items:center;margin:2px 0;flex-wrap:wrap}
+.sel{outline:3px solid #0a0}
+hr{border:none;border-top:1px dashed #888;margin:6px 0}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useEffect,useMemo,useRef}=React;
+
+// ============ DICE ============
+// parses strings like "2d6+3", "1d20-1", "4", etc. returns {total, rolls, mod}
+const roll=(expr)=>{
+  if(!expr&&expr!==0)return{total:0,rolls:[],mod:0,expr:""};
+  const s=String(expr).replace(/\s/g,"").toLowerCase();
+  const m=s.match(/^(\d*)d(\d+)([+-]\d+)?$/);
+  if(!m){const n=parseInt(s)||0;return{total:n,rolls:[],mod:n,expr:s}}
+  const n=parseInt(m[1]||"1"),d=parseInt(m[2]),mod=parseInt(m[3]||"0");
+  const rolls=Array.from({length:n},()=>1+Math.floor(Math.random()*d));
+  return{total:rolls.reduce((a,b)=>a+b,0)+mod,rolls,mod,expr:s};
+};
+const rollD20=(mod=0)=>{const r=1+Math.floor(Math.random()*20);return{total:r+mod,roll:r,mod}};
+
+// ============ STORAGE ============
+const LS_ROSTER="bureau_roster_v1";
+const loadRoster=()=>{try{return JSON.parse(localStorage.getItem(LS_ROSTER))||[]}catch{return[]}};
+const saveRoster=(r)=>localStorage.setItem(LS_ROSTER,JSON.stringify(r));
+
+// ============ DEFAULTS ============
+const ABILITIES=["STR","DEX","CON","INT","WIS","CHA"];
+const CONDITIONS_PRESET=["Blinded","Charmed","Deafened","Frightened","Grappled","Incapacitated","Invisible","Paralyzed","Petrified","Poisoned","Prone","Restrained","Stunned","Unconscious","Exhaustion"];
+const blankEntry=(isPC=false)=>({
+  id:crypto.randomUUID(),
+  name:isPC?"New PC":"New Monster",
+  isPC,
+  maxHP:10,ac:10,
+  saves:{STR:0,DEX:0,CON:0,INT:0,WIS:0,CHA:0},
+  attacks:[],// {name, toHit, damage, type}
+  notes:""
+});
+
+// ============ APP ============
+function App(){
+  const[tab,setTab]=useState("roster");
+  const[roster,setRoster]=useState(loadRoster);
+  const[encounter,setEncounter]=useState([]);// combatants for battle
+  const[started,setStarted]=useState(false);
+  const[turnIdx,setTurnIdx]=useState(0);
+  const[log,setLog]=useState([]);// {turn, text}
+  const[turnNum,setTurnNum]=useState(1);
+
+  useEffect(()=>saveRoster(roster),[roster]);
+
+  return(<div>
+    <h1 style={{margin:"0 0 8px"}}>Bureaucratorium: DND GM's Tool</h1>
+    <div className="tabs">
+      <button className={tab==="roster"?"active":""} onClick={()=>setTab("roster")}>Roster</button>
+      <button className={tab==="setup"?"active":""} onClick={()=>setTab("setup")}>Encounter Setup</button>
+      <button className={tab==="battle"?"active":""} onClick={()=>setTab("battle")}>Battle</button>
+    </div>
+    {tab==="roster"&&<Roster roster={roster} setRoster={setRoster}/>}
+    {tab==="setup"&&<Setup roster={roster} encounter={encounter} setEncounter={setEncounter} setStarted={setStarted} setTab={setTab} setTurnIdx={setTurnIdx} setLog={setLog} setTurnNum={setTurnNum}/>}
+    {tab==="battle"&&<Battle encounter={encounter} setEncounter={setEncounter} started={started} setStarted={setStarted} turnIdx={turnIdx} setTurnIdx={setTurnIdx} log={log} setLog={setLog} turnNum={turnNum} setTurnNum={setTurnNum}/>}
+  </div>);
+}
+
+// ============ ROSTER ============
+function Roster({roster,setRoster}){
+  const[editing,setEditing]=useState(null);
+  const fileRef=useRef();
+
+  const add=(isPC)=>{const e=blankEntry(isPC);setRoster([...roster,e]);setEditing(e.id)};
+  const update=(id,patch)=>setRoster(roster.map(e=>e.id===id?{...e,...patch}:e));
+  const del=(id)=>{if(confirm("Delete entry?"))setRoster(roster.filter(e=>e.id!==id))};
+
+  const exportAll=()=>{
+    const blob=new Blob([JSON.stringify(roster,null,2)],{type:"application/json"});
+    const a=document.createElement("a");a.href=URL.createObjectURL(blob);
+    a.download=`bureaucratorium-roster-${new Date().toISOString().slice(0,10)}.json`;a.click();
+  };
+  const importFile=(e)=>{
+    const f=e.target.files[0];if(!f)return;
+    const r=new FileReader();
+    r.onload=()=>{try{
+      const data=JSON.parse(r.result);
+      if(!Array.isArray(data))throw"bad format";
+      if(confirm(`Import ${data.length} entries? This will REPLACE current roster.`))setRoster(data);
+    }catch(err){alert("Import failed: "+err)}};
+    r.readAsText(f);
+  };
+
+  return(<div>
+    <div className="panel row">
+      <button onClick={()=>add(false)}>+ New Monster</button>
+      <button onClick={()=>add(true)}>+ New Player Character</button>
+      <span style={{flex:1}}/>
+      <button onClick={exportAll}>Export Roster (.json)</button>
+      <button onClick={()=>fileRef.current.click()}>Import Roster</button>
+      <input type="file" accept=".json" ref={fileRef} onChange={importFile} style={{display:"none"}}/>
+    </div>
+    <div className="cards">
+      {roster.map(e=>(<div key={e.id} className="card">
+        {editing===e.id
+          ? <RosterEdit entry={e} update={(p)=>update(e.id,p)} done={()=>setEditing(null)}/>
+          : <RosterView entry={e} edit={()=>setEditing(e.id)} del={()=>del(e.id)}/>}
+      </div>))}
+    </div>
+    {roster.length===0&&<p className="mini">Roster empty. Add a monster or PC.</p>}
+  </div>);
+}
+
+function RosterView({entry,edit,del}){
+  return(<div>
+    <h3>{entry.name} <span className="mini">[{entry.isPC?"PC":"Monster"}]</span></h3>
+    <div className="mini">HP {entry.maxHP} · AC {entry.ac}</div>
+    <div className="mini">Saves: {ABILITIES.map(a=>`${a} ${entry.saves[a]>=0?"+":""}${entry.saves[a]}`).join(" ")}</div>
+    {entry.attacks.length>0&&<div className="mini">Attacks: {entry.attacks.map(a=>a.name).join(", ")}</div>}
+    {entry.notes&&<details><summary>Notes</summary><div className="mini">{entry.notes}</div></details>}
+    <div className="row"><button onClick={edit}>Edit</button><button onClick={del}>Delete</button></div>
+  </div>);
+}
+
+function RosterEdit({entry,update,done}){
+  const addAtk=()=>update({attacks:[...entry.attacks,{name:"Attack",toHit:0,damage:"1d6",type:"slashing"}]});
+  const updAtk=(i,p)=>update({attacks:entry.attacks.map((a,j)=>j===i?{...a,...p}:a)});
+  const delAtk=(i)=>update({attacks:entry.attacks.filter((_,j)=>j!==i)});
+  return(<div className="col">
+    <input value={entry.name} onChange={e=>update({name:e.target.value})} placeholder="Name"/>
+    <label className="mini"><input type="checkbox" checked={entry.isPC} onChange={e=>update({isPC:e.target.checked})}/> Player Character</label>
+    <div className="row"><label className="mini">Max HP</label><input type="number" value={entry.maxHP} onChange={e=>update({maxHP:+e.target.value})}/>
+    <label className="mini">AC</label><input type="number" value={entry.ac} onChange={e=>update({ac:+e.target.value})}/></div>
+    <div className="mini">Saving throw modifiers:</div>
+    <div className="row">{ABILITIES.map(a=>(<span key={a} className="mini">{a}<input type="number" value={entry.saves[a]} onChange={e=>update({saves:{...entry.saves,[a]:+e.target.value}})} style={{width:45}}/></span>))}</div>
+    <div className="mini">Attacks (DEX save mod is DEX; to-hit and damage dice string like "1d8+3"):</div>
+    {entry.attacks.map((a,i)=>(<div key={i} className="atk-row">
+      <input value={a.name} onChange={e=>updAtk(i,{name:e.target.value})} placeholder="Name" style={{width:90}}/>
+      <span className="mini">+hit</span><input type="number" value={a.toHit} onChange={e=>updAtk(i,{toHit:+e.target.value})} style={{width:45}}/>
+      <input value={a.damage} onChange={e=>updAtk(i,{damage:e.target.value})} placeholder="1d6+2" style={{width:80}}/>
+      <input value={a.type} onChange={e=>updAtk(i,{type:e.target.value})} placeholder="type" style={{width:70}}/>
+      <button onClick={()=>delAtk(i)}>×</button>
+    </div>))}
+    <button onClick={addAtk}>+ Add Attack</button>
+    <textarea value={entry.notes} onChange={e=>update({notes:e.target.value})} placeholder="Notes (legendary actions, lair actions, reactions, etc.)" rows={3}/>
+    <button onClick={done}>Done</button>
+  </div>);
+}
+
+// ============ ENCOUNTER SETUP ============
+// combatant: {id, rosterId, name, isPC, maxHP, hp, ac, saves, attacks, notes, init, conditions[], dead, unconscious, deathSaves:{s,f}, concentrating}
+const makeCombatant=(entry,label)=>({
+  id:crypto.randomUUID(),
+  rosterId:entry.id,name:label||entry.name,isPC:entry.isPC,
+  maxHP:entry.maxHP,hp:entry.maxHP,ac:entry.ac,
+  saves:{...entry.saves},attacks:entry.attacks.map(a=>({...a})),notes:entry.notes,
+  init:0,conditions:[],dead:false,unconscious:false,deathSaves:{s:0,f:0},concentrating:false
+});
+
+function Setup({roster,encounter,setEncounter,setStarted,setTab,setTurnIdx,setLog,setTurnNum}){
+  const[sel,setSel]=useState("");
+  const[count,setCount]=useState(1);
+  const addFromRoster=()=>{
+    const e=roster.find(r=>r.id===sel);if(!e)return;
+    const adds=[];
+    if(count>1&&!e.isPC){for(let i=1;i<=count;i++)adds.push(makeCombatant(e,`${e.name} ${i}`))}
+    else for(let i=0;i<count;i++)adds.push(makeCombatant(e));
+    setEncounter([...encounter,...adds]);
+  };
+  const addManual=()=>{
+    setEncounter([...encounter,makeCombatant(blankEntry(false),"Unnamed")]);
+  };
+  const remove=(id)=>setEncounter(encounter.filter(c=>c.id!==id));
+  const updInit=(id,v)=>setEncounter(encounter.map(c=>c.id===id?{...c,init:+v}:c));
+
+  const start=()=>{
+    // auto-roll init for non-PCs (DEX save mod used as rough DEX mod proxy)
+    const rolled=encounter.map(c=>c.isPC?c:{...c,init:rollD20(c.saves.DEX).total});
+    const sorted=[...rolled].sort((a,b)=>b.init-a.init);
+    setEncounter(sorted);setStarted(true);setTurnIdx(0);setTurnNum(1);
+    setLog([{turn:0,text:"— Battle begins —"}]);
+    setTab("battle");
+  };
+
+  return(<div>
+    <div className="panel">
+      <div className="row">
+        <select value={sel} onChange={e=>setSel(e.target.value)}>
+          <option value="">— pick from roster —</option>
+          {roster.map(r=>(<option key={r.id} value={r.id}>{r.name} [{r.isPC?"PC":"M"}]</option>))}
+        </select>
+        <label className="mini">×</label>
+        <input type="number" min="1" value={count} onChange={e=>setCount(+e.target.value||1)}/>
+        <button onClick={addFromRoster} disabled={!sel}>Add to Encounter</button>
+        <button onClick={addManual}>+ Manual Combatant</button>
+      </div>
+    </div>
+    <div className="panel">
+      <h3>Current Encounter ({encounter.length})</h3>
+      {encounter.map(c=>(<div key={c.id} className="row" style={{padding:"4px",borderBottom:"1px solid #ccc"}}>
+        <strong style={{minWidth:160}}>{c.name}</strong>
+        <span className="mini">[{c.isPC?"PC":"Monster"}]</span>
+        <span className="mini">HP {c.maxHP} · AC {c.ac}</span>
+        {c.isPC&&<><label className="mini">Init:</label><input type="number" value={c.init} onChange={e=>updInit(c.id,e.target.value)}/></>}
+        <button onClick={()=>remove(c.id)}>Remove</button>
+      </div>))}
+      {encounter.length===0&&<p className="mini">No combatants yet.</p>}
+    </div>
+    <button onClick={start} disabled={encounter.length===0} style={{fontSize:16,padding:"10px 20px"}}>▶ Start Battle</button>
+  </div>);
+}
+
+// ============ BATTLE ============
+function Battle({encounter,setEncounter,started,setStarted,turnIdx,setTurnIdx,log,setLog,turnNum,setTurnNum}){
+  const[selected,setSelected]=useState([]);// ids for multi-save
+  const[saveDC,setSaveDC]=useState(15);
+  const[saveAbility,setSaveAbility]=useState("DEX");
+  const logEvent=(text)=>setLog(l=>[...l,{turn:turnNum,text}]);
+
+  if(!started)return(<p>No active battle. Go to Encounter Setup.</p>);
+
+  const upd=(id,patch)=>setEncounter(enc=>enc.map(c=>c.id===id?{...c,...patch}:c));
+  const updFn=(id,fn)=>setEncounter(enc=>enc.map(c=>c.id===id?fn(c):c));
+
+  const advance=()=>{
+    let next=turnIdx;
+    for(let i=0;i<encounter.length;i++){
+      next=(next+1)%encounter.length;
+      if(next===0)setTurnNum(n=>n+1);
+      if(!encounter[next].dead)break;
+    }
+    setTurnIdx(next);
+  };
+
+  const toggleSel=(id)=>setSelected(s=>s.includes(id)?s.filter(x=>x!==id):[...s,id]);
+  const rollGroupSave=()=>{
+    const results=selected.map(id=>{
+      const c=encounter.find(x=>x.id===id);
+      const r=rollD20(c.saves[saveAbility]);
+      return`${c.name}: ${saveAbility} save ${r.roll}${r.mod>=0?"+":""}${r.mod} = ${r.total} ${r.total>=saveDC?"✓ PASS":"✗ FAIL"}`;
+    });
+    logEvent("Group "+saveAbility+" save DC "+saveDC+":\n  "+results.join("\n  "));
+    setSelected([]);
+  };
+
+  const endBattle=()=>{if(confirm("End battle and clear encounter?")){setStarted(false);setEncounter([]);setTurnIdx(0);setTurnNum(1)}};
+  const exportLog=()=>{
+    const text=log.map(l=>(l.turn?`[Turn ${l.turn}] `:"")+l.text).join("\n");
+    const blob=new Blob([text],{type:"text/plain"});
+    const a=document.createElement("a");a.href=URL.createObjectURL(blob);
+    a.download=`battle-log-${new Date().toISOString().slice(0,10)}.txt`;a.click();
+  };
+
+  return(<div>
+    <div className="panel row">
+      <button onClick={advance} style={{fontSize:15,padding:"8px 14px"}}>▶ Advance Turn</button>
+      <span><strong>Round {turnNum}</strong></span>
+      <span className="mini">Active: {encounter[turnIdx]?.name}</span>
+      <span style={{flex:1}}/>
+      {selected.length>0&&<>
+        <span className="mini">{selected.length} selected</span>
+        <label className="mini">DC</label><input type="number" value={saveDC} onChange={e=>setSaveDC(+e.target.value)}/>
+        <select value={saveAbility} onChange={e=>setSaveAbility(e.target.value)}>{ABILITIES.map(a=>(<option key={a}>{a}</option>))}</select>
+        <button onClick={rollGroupSave}>Roll {saveAbility} Save</button>
+        <button onClick={()=>setSelected([])}>Clear</button>
+      </>}
+      <button onClick={exportLog}>Export Log (.txt)</button>
+      <button onClick={endBattle}>End Battle</button>
+    </div>
+    <div className="battle">
+      <div className="panel">
+        <h3>Turn Order</h3>
+        <ul className="turn-list">{encounter.map((c,i)=>(<li key={c.id} className={(i===turnIdx?"active ":"")+(c.dead?"dead":"")} onClick={()=>setTurnIdx(i)}>
+          {c.init} — {c.name} {c.unconscious&&!c.dead?"(down)":""}
+        </li>))}</ul>
+      </div>
+      <div className="cards">
+        {encounter.map((c,i)=>(<CombatantCard key={c.id} c={c} active={i===turnIdx} selected={selected.includes(c.id)} toggleSel={()=>toggleSel(c.id)} upd={(p)=>upd(c.id,p)} updFn={(fn)=>updFn(c.id,fn)} logEvent={logEvent}/>))}
+      </div>
+      <div>
+        <h3 style={{margin:"0 0 4px"}}>Battle Log</h3>
+        <div className="log">{log.map((l,i)=>(<div key={i}>{l.turn?`[T${l.turn}] `:""}{l.text}</div>))}</div>
+      </div>
+    </div>
+  </div>);
+}
+
+function CombatantCard({c,active,selected,toggleSel,upd,updFn,logEvent}){
+  const[dmg,setDmg]=useState("");
+  const[dmgSrc,setDmgSrc]=useState("");
+  const[dmgType,setDmgType]=useState("");
+  const[heal,setHeal]=useState("");
+  const[newCond,setNewCond]=useState("");
+  const[condPick,setCondPick]=useState("");
+
+  const applyDamage=()=>{
+    const n=parseInt(dmg)||0;if(!n)return;
+    const newHP=Math.max(0,c.hp-n);
+    const patch={hp:newHP};
+    let msg=`${c.name} took ${n}${dmgType?` ${dmgType}`:""} damage${dmgSrc?` (from ${dmgSrc})`:""}`;
+    // auto unconscious/dead
+    if(newHP===0){
+      if(c.isPC){patch.unconscious=true;msg+=` — ${c.name} is down!`}
+      else{patch.dead=true;msg+=` — ${c.name} died`}
+    }
+    logEvent(msg);
+    // concentration prompt
+    if(c.concentrating&&n>0){
+      const dc=Math.max(10,Math.floor(n/2));
+      const r=rollD20(c.saves.CON);
+      logEvent(`  ${c.name} concentration CON save (DC ${dc}): ${r.roll}${r.mod>=0?"+":""}${r.mod} = ${r.total} ${r.total>=dc?"✓ HELD":"✗ BROKEN"}`);
+      if(r.total<dc)patch.concentrating=false;
+    }
+    upd(patch);setDmg("");
+  };
+  const applyHeal=()=>{
+    const n=parseInt(heal)||0;if(!n)return;
+    const newHP=Math.min(c.maxHP,c.hp+n);
+    logEvent(`${c.name} recovered ${n} HP`);
+    const patch={hp:newHP};
+    if(newHP>0&&c.unconscious){patch.unconscious=false;patch.deathSaves={s:0,f:0}}
+    upd(patch);setHeal("");
+  };
+  const toggleDead=()=>{upd({dead:!c.dead});logEvent(`${c.name} marked ${!c.dead?"dead":"alive"}`)};
+  const addCondition=(name)=>{if(!name||c.conditions.includes(name))return;upd({conditions:[...c.conditions,name]});logEvent(`${c.name} gained: ${name}`)};
+  const removeCondition=(n)=>{upd({conditions:c.conditions.filter(x=>x!==n)});logEvent(`${c.name} lost: ${n}`)};
+  const bumpSave=(which)=>{
+    const ds={...c.deathSaves,[which]:Math.min(3,c.deathSaves[which]+1)};
+    const patch={deathSaves:ds};
+    logEvent(`${c.name} death save ${which==="s"?"SUCCESS":"FAIL"} (${ds.s}/${ds.f})`);
+    if(ds.s>=3){patch.unconscious=false;patch.deathSaves={s:0,f:0};logEvent(`  ${c.name} stabilized`)}
+    if(ds.f>=3){patch.dead=true;logEvent(`  ${c.name} has died`)}
+    upd(patch);
+  };
+  const rollAttack=(a)=>{
+    const h=rollD20(a.toHit),d=roll(a.damage);
+    logEvent(`${c.name} uses ${a.name}: to-hit ${h.roll}${h.mod>=0?"+":""}${h.mod} = ${h.total}, damage ${d.total} ${a.type} [${d.rolls.join("+")}${d.mod?(d.mod>=0?"+":"")+d.mod:""}]`);
+  };
+
+  return(<div className={"card "+(c.dead?"dead ":"")+(active?"active ":"")+(selected?"sel":"")}>
+    <div className="row">
+      <input type="checkbox" checked={selected} onChange={toggleSel} title="Select for group save"/>
+      <input value={c.name} onChange={e=>upd({name:e.target.value})} style={{flex:1,fontWeight:"bold"}}/>
+      <span className="mini">{c.isPC?"PC":"M"}</span>
+    </div>
+    <div className="row">
+      <label className="mini">HP</label>
+      <input type="number" value={c.hp} onChange={e=>upd({hp:+e.target.value})}/>
+      <span className="mini">/</span>
+      <input type="number" value={c.maxHP} onChange={e=>upd({maxHP:+e.target.value})}/>
+      <label className="mini">AC</label>
+      <input type="number" value={c.ac} onChange={e=>upd({ac:+e.target.value})}/>
+    </div>
+    <div className="row">
+      <input type="number" placeholder="dmg" value={dmg} onChange={e=>setDmg(e.target.value)} style={{width:50}}/>
+      <input placeholder="type" value={dmgType} onChange={e=>setDmgType(e.target.value)} style={{width:70}}/>
+      <input placeholder="source" value={dmgSrc} onChange={e=>setDmgSrc(e.target.value)} style={{width:70}}/>
+      <button onClick={applyDamage}>Damage</button>
+    </div>
+    <div className="row">
+      <input type="number" placeholder="heal" value={heal} onChange={e=>setHeal(e.target.value)} style={{width:50}}/>
+      <button onClick={applyHeal}>Heal</button>
+      <button onClick={toggleDead}>{c.dead?"Revive":"Mark Dead"}</button>
+    </div>
+    <div className="row">
+      <label className="mini"><input type="checkbox" checked={c.concentrating} onChange={e=>upd({concentrating:e.target.checked})}/> Conc.</label>
+    </div>
+    <hr/>
+    <div>
+      {c.conditions.map(n=>(<span key={n} className="tag">{n}<button onClick={()=>removeCondition(n)}>×</button></span>))}
+    </div>
+    <div className="row">
+      <select value={condPick} onChange={e=>{setCondPick("");addCondition(e.target.value)}}>
+        <option value="">+ condition</option>
+        {CONDITIONS_PRESET.map(x=>(<option key={x}>{x}</option>))}
+      </select>
+      <input placeholder="custom" value={newCond} onChange={e=>setNewCond(e.target.value)} style={{width:80}}/>
+      <button onClick={()=>{addCondition(newCond);setNewCond("")}}>Add</button>
+    </div>
+    {c.isPC&&c.unconscious&&!c.dead&&(<div><hr/>
+      <div className="mini">Death Saves</div>
+      <div className="saves">
+        {[0,1,2].map(i=>(<div key={"s"+i} className={"save-box "+(c.deathSaves.s>i?"filled":"")} onClick={()=>bumpSave("s")}/>))}
+        <span style={{width:8}}/>
+        {[0,1,2].map(i=>(<div key={"f"+i} className={"save-box "+(c.deathSaves.f>i?"fail":"")} onClick={()=>bumpSave("f")}/>))}
+      </div>
+    </div>)}
+    {!c.isPC&&c.attacks.length>0&&(<div><hr/>
+      {c.attacks.map((a,i)=>(<div key={i} className="atk-row">
+        <button onClick={()=>rollAttack(a)}>{a.name}</button>
+        <span className="mini">+{a.toHit} / {a.damage} {a.type}</span>
+      </div>))}
+    </div>)}
+    <details><summary className="mini">Notes / Saves</summary>
+      <div className="mini">Saves: {ABILITIES.map(a=>`${a}${c.saves[a]>=0?"+":""}${c.saves[a]}`).join(" ")}</div>
+      <textarea value={c.notes} onChange={e=>upd({notes:e.target.value})} rows={3} style={{width:"100%"}}/>
+    </details>
+  </div>);
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
